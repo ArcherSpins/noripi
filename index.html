@@ -240,6 +240,16 @@ h2.q{font-size:clamp(21px,5.4vw,27px);text-align:center;line-height:1.5;color:va
 .summary .v{color:var(--coffee-d);font-weight:700;font-size:15px;text-align:right;}
 .lang-en .summary .v{font-family:var(--font-en);font-size:16px;}
 
+/* email delivery status */
+.email-status{
+  min-height:22px;margin-top:14px;text-align:center;font-family:var(--font-round);
+  font-size:13px;font-weight:700;line-height:1.5;color:var(--muted);
+}
+.lang-en .email-status{font-family:var(--font-en);font-size:15px;}
+.email-status.sending{color:var(--caramel);}
+.email-status.sent{color:#52785a;}
+.email-status.failed{color:#a34f43;}
+
 /* confetti canvas */
 #confetti{position:fixed;inset:0;pointer-events:none;z-index:50;}
 
@@ -432,7 +442,7 @@ h2.q{font-size:clamp(21px,5.4vw,27px);text-align:center;line-height:1.5;color:va
       <div class="propose-q" data-i18n="propose_q">僕と付き合ってくれる？</div>
       <p class="propose-note" data-i18n="propose_note">（ちゃんと、心を込めて聞いてます）</p>
       <div class="yn" id="ynZone">
-        <button class="btn btn-yes" onclick="sayYes()" data-i18n="yes">うん！ ♥</button>
+        <button class="btn btn-yes" id="btnYes" onclick="sayYes()" data-i18n="yes">うん！ ♥</button>
         <button class="btn btn-no" id="btnNo" data-i18n="no">ううん</button>
       </div>
     </div>
@@ -446,6 +456,7 @@ h2.q{font-size:clamp(21px,5.4vw,27px);text-align:center;line-height:1.5;color:va
       <div class="divider"></div>
       <p class="sub" data-i18n="final_sub">ミツキ、ありがとう。<br>これからもよろしくね。世界一大切にするから。</p>
       <div class="summary" id="summary"></div>
+      <p class="email-status" id="emailStatus" aria-live="polite"></p>
       <div class="actions" style="flex-direction:column;">
         <button class="btn btn-full gold" onclick="downloadAnswers()" data-i18n="download">この思い出を保存する 📥</button>
         <button class="btn btn-full ghost" onclick="restart()" data-i18n="restart">もういちど見る</button>
@@ -458,6 +469,9 @@ h2.q{font-size:clamp(21px,5.4vw,27px);text-align:center;line-height:1.5;color:va
 
 <div class="progress" id="progress"></div>
 <canvas id="confetti"></canvas>
+
+<!-- EmailJS Browser SDK: no Gmail password or private key is placed in this file. -->
+<script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
 
 <script>
 /* ================= i18n ================= */
@@ -481,6 +495,10 @@ const I18N = {
     final_sub:"ミツキ、ありがとう。<br>これからもよろしくね。世界一大切にするから。",
     download:"この思い出を保存する 📥", restart:"もういちど見る",
     save_note:"※保存できないときはスクリーンショットでも残せるよ 📸",
+    email_sending:"回答をメールで送信中…",
+    email_sent:"回答をメールで送信しました ✓",
+    email_failed:"メール送信に失敗しました。下のボタンから保存できます。",
+    email_not_configured:"EmailJSのキーがまだ設定されていません。",
     back:"もどる", nextbtn:"つぎへ",
     // summary labels
     s_dish:"好きな食べ物", s_place:"行きたい場所", s_when:"デートの日時", s_evening:"夜も一緒に", s_season:"好きな季節", s_answer:"お返事",
@@ -510,6 +528,10 @@ const I18N = {
     final_sub:"Thank you, Mitsuki.<br>Let's keep going together. I'll cherish you more than anyone.",
     download:"Save this memory 📥", restart:"See it again",
     save_note:"* If it won't save, a screenshot works too 📸",
+    email_sending:"Sending the answers by email…",
+    email_sent:"The answers were emailed successfully ✓",
+    email_failed:"Email delivery failed. You can still save the result below.",
+    email_not_configured:"The EmailJS keys have not been configured yet.",
     back:"Back", nextbtn:"Next",
     s_dish:"Favorite food", s_place:"Place to go", s_when:"Date & time", s_evening:"Whole evening", s_season:"Favorite season", s_answer:"Answer",
     yes_word:"Yes ♥", evening_yes:"Yes, all evening 🌙", evening_no:"—",
@@ -523,6 +545,20 @@ const I18N = {
 let lang="jp";
 const T=()=>I18N[lang];
 
+/*
+ * EMAILJS SETUP
+ * Replace only the three values below with the values from your EmailJS dashboard.
+ * Never put your Gmail password or an EmailJS private key in this HTML file.
+ */
+const EMAILJS_CONFIG = Object.freeze({
+  publicKey: "hDi-APA4TeFn-Julb",
+  serviceId: "charity",
+  templateId: "template_shc7t7f"
+});
+
+let emailState="idle"; // idle | sending | sent | failed | not_configured
+let emailSending=false;
+
 function setLang(l){
   lang=l;
   document.body.classList.toggle("lang-en",l==="en");
@@ -532,6 +568,7 @@ function setLang(l){
   document.documentElement.lang = l==="en" ? "en":"ja";
   applyI18n();
   renderCalendar();
+  renderEmailStatus();
 }
 function applyI18n(){
   document.querySelectorAll("[data-i18n]").forEach(el=>{
@@ -763,10 +800,98 @@ function setupNoRunaway(){
   no.addEventListener("click",attemptNo);
 }
 
-/* ================= YES ================= */
-function sayYes(){
+/* ================= EMAIL + YES ================= */
+function isEmailConfigured(){
+  return Boolean(
+    EMAILJS_CONFIG.publicKey &&
+    EMAILJS_CONFIG.serviceId &&
+    EMAILJS_CONFIG.templateId &&
+    !EMAILJS_CONFIG.publicKey.startsWith("PASTE_") &&
+    !EMAILJS_CONFIG.serviceId.startsWith("PASTE_") &&
+    !EMAILJS_CONFIG.templateId.startsWith("PASTE_")
+  );
+}
+
+function buildAnswerText(){
+  const lines=[];
+  lines.push("💌 "+I18N.jp.file_head);
+  lines.push("   "+I18N.en.file_head);
+  lines.push("");
+  const dateStr=answers.date?(answers.date+"  "+answers.hour+":"+answers.min):"-";
+  const pair=(jp,en,v)=>{lines.push(jp+" / "+en+": "+v);};
+  pair("好きな食べ物","Favorite food",answers.dish||"-");
+  pair("行きたい場所","Place to go",answers.place||"-");
+  pair("デートの日時","Date & time",dateStr);
+  pair("夜も一緒に","Whole evening",answers.evening?"はい / Yes 🌙":"いいえ / No");
+  pair(
+    "好きな季節",
+    "Favorite season",
+    (answers.season?seasonEmoji(answers.season)+" ":"")+
+      (I18N.jp[answers.season]||"-")+" / "+(I18N.en[answers.season]||"-")
+  );
+  lines.push("");
+  lines.push("お返事 / Answer: はい、付き合います ♥ / Yes, I will ♥");
+  lines.push("");
+  lines.push("回答日時 / Submitted: "+new Date().toLocaleString("ja-JP",{timeZone:"Asia/Tokyo"}));
+  lines.push("");
+  lines.push("――――――――――――――");
+  lines.push("ミツキ、ずっと大切にするね。");
+  lines.push("Mitsuki, I'll cherish you forever.");
+  return lines.join("\n");
+}
+
+async function sendAnswersByEmail(){
+  if(!isEmailConfigured()){
+    const error=new Error("EmailJS is not configured");
+    error.code="EMAILJS_NOT_CONFIGURED";
+    throw error;
+  }
+  if(!window.emailjs || typeof window.emailjs.send!=="function"){
+    throw new Error("EmailJS SDK could not be loaded");
+  }
+
+  const templateParams={
+    message:buildAnswerText(),
+    dish:answers.dish||"-",
+    place:answers.place||"-",
+    date_time:answers.date?(answers.date+" "+answers.hour+":"+answers.min):"-",
+    evening:answers.evening?"はい / Yes 🌙":"いいえ / No",
+    season:(answers.season?seasonEmoji(answers.season)+" ":"")+
+      (I18N.jp[answers.season]||"-")+" / "+(I18N.en[answers.season]||"-"),
+    answer:"はい、付き合います ♥ / Yes, I will ♥",
+    submitted_at:new Date().toLocaleString("ja-JP",{timeZone:"Asia/Tokyo"})
+  };
+
+  return window.emailjs.send(
+    EMAILJS_CONFIG.serviceId,
+    EMAILJS_CONFIG.templateId,
+    templateParams,
+    {publicKey:EMAILJS_CONFIG.publicKey}
+  );
+}
+
+async function sayYes(){
+  if(emailSending) return;
   answers.answer="yes";
-  next(); // -> final
+  emailSending=true;
+  emailState="sending";
+
+  const yesButton=document.getElementById("btnYes");
+  if(yesButton) yesButton.disabled=true;
+
+  next(); // show the final screen immediately while the email is being sent
+
+  try{
+    await sendAnswersByEmail();
+    emailState="sent";
+  }catch(error){
+    console.error("Email delivery failed:",error);
+    emailState=error&&error.code==="EMAILJS_NOT_CONFIGURED" ? "not_configured":"failed";
+  }finally{
+    emailSending=false;
+    if(yesButton) yesButton.disabled=false;
+    renderEmailStatus();
+  }
 }
 
 /* ================= summary + final ================= */
@@ -794,33 +919,28 @@ function buildSummary(){
 }
 function escapeHtml(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
 
+function renderEmailStatus(){
+  const el=document.getElementById("emailStatus");
+  if(!el) return;
+  const key={
+    sending:"email_sending",
+    sent:"email_sent",
+    failed:"email_failed",
+    not_configured:"email_not_configured"
+  }[emailState];
+  el.className="email-status"+(emailState!=="idle"?" "+emailState.replace("not_configured","failed"):"");
+  el.textContent=key?T()[key]:"";
+}
+
 function fireFinal(){
   buildSummary();
+  renderEmailStatus();
   startConfetti();
 }
 
 /* ================= download ================= */
 function downloadAnswers(){
-  const L=I18N; // build a bilingual keepsake
-  const lines=[];
-  lines.push("💌 "+I18N.jp.file_head);
-  lines.push("   "+I18N.en.file_head);
-  lines.push("");
-  const dateStr=answers.date?(answers.date+"  "+answers.hour+":"+answers.min):"-";
-  const pair=(jp,en,v)=>{lines.push(jp+" / "+en+": "+v);};
-  pair("好きな食べ物","Favorite food",answers.dish||"-");
-  pair("行きたい場所","Place to go",answers.place||"-");
-  pair("デートの日時","Date & time",dateStr);
-  pair("夜も一緒に","Whole evening",answers.evening?"はい / Yes 🌙":"-");
-  pair("好きな季節","Favorite season",(answers.season?seasonEmoji(answers.season)+" ":"")+(I18N.jp[answers.season]||"-")+" / "+(I18N.en[answers.season]||"-"));
-  lines.push("");
-  lines.push("お返事 / Answer: はい、付き合います ♥ / Yes, I will ♥");
-  lines.push("");
-  lines.push("――――――――――――――");
-  lines.push("ミツキ、ずっと大切にするね。");
-  lines.push("Mitsuki, I'll cherish you forever.");
-  const content=lines.join("\n");
-
+  const content=buildAnswerText();
   const blob=new Blob([content],{type:"text/plain;charset=utf-8"});
   const url=URL.createObjectURL(blob);
   const a=document.createElement("a");
@@ -829,7 +949,6 @@ function downloadAnswers(){
   document.body.appendChild(a);
   a.click();
   setTimeout(()=>{document.body.removeChild(a);URL.revokeObjectURL(url);},500);
-  // little celebratory burst
   burst(window.innerWidth/2, window.innerHeight*0.4, 60);
 }
 
@@ -837,6 +956,8 @@ function downloadAnswers(){
 function restart(){
   stopConfetti();
   resetNoButton();
+  emailState="idle";
+  renderEmailStatus();
   showStep(0);
 }
 
